@@ -75,6 +75,7 @@ tests/strrb/strrb_test
 
 utils/osmo-arfcn
 utils/osmo-auc-gen
+utils/osmo-sim-test
 
 doc/codec
 doc/core
