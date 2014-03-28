@@ -1,6 +1,8 @@
 #ifndef OSMOCORE_UTIL_H
 #define OSMOCORE_UTIL_H
 
+#include <osmocom/core/backtrace.h>
+
 /*! \defgroup utils General-purpose utility functions
  *  @{
  */
@@ -37,7 +39,7 @@ char *osmo_hexdump(const unsigned char *buf, int len);
 char *osmo_hexdump_nospc(const unsigned char *buf, int len);
 char *osmo_osmo_hexdump_nospc(const unsigned char *buf, int len) __attribute__((__deprecated__));
 
-#define osmo_static_assert(exp, name) typedef int dummy##name [(exp) ? 1 : -1];
+#define osmo_static_assert(exp, name) int dummy##name [(exp) ? 1 : -1] __attribute__((__unused__));
 
 void osmo_str2lower(char *out, const char *in);
 void osmo_str2upper(char *out, const char *in);

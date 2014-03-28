@@ -25,7 +25,10 @@
 #ifndef GSM_UTILS_H
 #define GSM_UTILS_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <osmocom/core/defs.h>
 
 #define ADD_MODULO(sum, delta, modulo) do {	\
 	if ((sum += delta) >= modulo)		\
@@ -56,13 +59,54 @@ enum gsm_band {
 const char *gsm_band_name(enum gsm_band band);
 enum gsm_band gsm_band_parse(const char *mhz);
 
-int gsm_7bit_decode(char *decoded, const uint8_t *user_data, uint8_t length);
-int gsm_7bit_decode_hdr(char *decoded, const uint8_t *user_data, uint8_t length, uint8_t ud_hdr_ind);
-int gsm_7bit_encode(uint8_t *result, const char *data);
+/*!
+ * \brief Decode a sequence of GSM 03.38 encoded 7 bit characters.
+ *
+ * \param decoded	The destination buffer for the decoded characters.
+ * \param n		A maximum of n chars is written (incl. terminating \0).
+ * 			Requires n >= 1.
+ * \param user_data	A pointer to the start of the packed 7bit character
+ *			sequence.
+ * \param length	The length of the input sequence (in octets).
+ *
+ * \returns the number of (8 bit) chars written excluding the terminating \0.
+ * 	    This is the same like strlen(decoded).
+ */
+int gsm_7bit_decode_n(char *decoded, size_t n, const uint8_t *user_data, uint8_t length);
 
+/*!
+ * \brief Decode a sequence of 7 bit characters (USSD encoding).
+ *
+ * \see gsm_7bit_encode_n()
+ */
+int gsm_7bit_decode_n_ussd(char *decoded, size_t n, const uint8_t *user_data, uint8_t length);
+
+/*!
+ * \brief Encode a text string into GSM 03.38 encoded 7 bit characters.
+ *
+ * \param result	The destination buffer for the packed 7 bit sequence.
+ * \param n		A maximum of n octets is written.
+ * \param data		A pointer to the start of the \0 terminated 8 bit character
+ *			string.
+ * \param octets_written  Iff not NULL, *octets_written will be set to the
+ *			number of octets written to the result buffer.
+ *
+ * \returns the number of septets that have been created.
+ */
+int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets_written);
+
+/*!
+ * \brief Encode a text string into GSM 03.38 encoded 7 bit characters (USSD encoding).
+ *
+ * \see gsm_7bit_decode_n()
+ */
+int gsm_7bit_encode_n_ussd(uint8_t *result, size_t n, const char *data, int *octets_written);
+
+/* the four functions below are helper functions and here for the unit test */
 int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len, uint8_t padding);
 int gsm_septet_encode(uint8_t *result, const char *data);
 uint8_t gsm_get_octet_len(const uint8_t sept_len);
+int gsm_7bit_decode_n_hdr(char *decoded, size_t n, const uint8_t *user_data, uint8_t length, uint8_t ud_hdr_ind);
 
 unsigned int ms_class_gmsk_dbm(enum gsm_band band, int ms_class);
 
@@ -149,6 +193,16 @@ enum gsm_chan_t {
 	GSM_LCHAN_PDTCH,
 	_GSM_LCHAN_MAX
 };
+
+/* Deprectated functions */
+/* Limit encoding and decoding to use no more than this amount of buffer bytes */
+#define GSM_7BIT_LEGACY_MAX_BUFFER_SIZE  0x10000
+
+int gsm_7bit_decode(char *decoded, const uint8_t *user_data, uint8_t length) OSMO_DEPRECATED("Use gsm_7bit_decode_n() instead");
+int gsm_7bit_decode_ussd(char *decoded, const uint8_t *user_data, uint8_t length) OSMO_DEPRECATED("Use gsm_7bit_decode_n_ussd() instead");
+int gsm_7bit_encode(uint8_t *result, const char *data) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
+int gsm_7bit_encode_ussd(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n_ussd() instead");
+int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
 
 
 #endif

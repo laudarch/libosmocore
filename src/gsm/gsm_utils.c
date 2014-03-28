@@ -1,6 +1,6 @@
 /*
  * (C) 2008 by Daniel Willmann <daniel@totalueberwachung.de>
- * (C) 2009 by Holger Hans Peter Freyther <zecke@selfish.org>
+ * (C) 2009,2013 by Holger Hans Peter Freyther <zecke@selfish.org>
  * (C) 2009-2010 by Harald Welte <laforge@gnumonks.org>
  * (C) 2010-2012 by Nico Golde <nico@ngolde.de>
  *
@@ -28,7 +28,7 @@
  * This library is a collection of common code used in various
  * GSM related sub-projects inside the Osmocom family of projects.  It
  * includes A5/1 and A5/2 ciphers, COMP128v1, a LAPDm implementation,
- * a GSM TLV parser, SMS utility routines as well as 
+ * a GSM TLV parser, SMS utility routines as well as
  * protocol definitions for a series of protocols:
  * 	* Um L2 (04.06)
  * 	* Um L3 (04.08)
@@ -80,8 +80,12 @@
  * left out as they can't be handled with a char and
  * since most phones don't display or write these
  * characters this would only needlessly make the code
- * more complex
-*/
+ * more complex.
+ *
+ * Note that this table contains the latin1->7bit mapping _and_ has
+ * been merged with the reverse mapping (7bit->latin1) for the
+ * extended characters at offset 0x7f.
+ */
 static unsigned char gsm_7bit_alphabet[] = {
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0a, 0xff, 0xff, 0x0d, 0xff,
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -123,12 +127,17 @@ uint8_t gsm_get_octet_len(const uint8_t sept_len){
 }
 
 /* GSM 03.38 6.2.1 Character unpacking */
-int gsm_7bit_decode_hdr(char *text, const uint8_t *user_data, uint8_t septet_l, uint8_t ud_hdr_ind)
+int gsm_7bit_decode_n_hdr(char *text, size_t n, const uint8_t *user_data, uint8_t septet_l, uint8_t ud_hdr_ind)
 {
 	int i = 0;
 	int shift = 0;
-	uint8_t c;
+	uint8_t c7, c8;
 	uint8_t next_is_ext = 0;
+	const char *text_buf_begin = text;
+	const char *text_buf_end = text + n;
+	int nchars;
+
+	OSMO_ASSERT (n > 0);
 
 	/* skip the user data header */
 	if (ud_hdr_ind) {
@@ -139,37 +148,49 @@ int gsm_7bit_decode_hdr(char *text, const uint8_t *user_data, uint8_t septet_l, 
 		septet_l = septet_l - shift;
 	}
 
-	for (i = 0; i < septet_l; i++) {
-		c =
+	for (i = 0; i < septet_l && text != text_buf_end - 1; i++) {
+		c7 =
 			((user_data[((i + shift) * 7 + 7) >> 3] <<
 			  (7 - (((i + shift) * 7 + 7) & 7))) |
 			 (user_data[((i + shift) * 7) >> 3] >>
 			  (((i + shift) * 7) & 7))) & 0x7f;
 
-		/* this is an extension character */
 		if (next_is_ext) {
+			/* this is an extension character */
 			next_is_ext = 0;
-			*(text++) = gsm_7bit_alphabet[0x7f + c];
+			c8 = gsm_7bit_alphabet[0x7f + c7];
+		} else if (c7 == 0x1b && i + 1 < septet_l) {
+			next_is_ext = 1;
 			continue;
+		} else {
+			c8 = gsm_septet_lookup(c7);
 		}
 
-		if (c == 0x1b && i + 1 < septet_l) {
-			next_is_ext = 1;
-		} else {
-			*(text++) = gsm_septet_lookup(c);
-		}
+		*(text++) = c8;
 	}
 
-	if (ud_hdr_ind)
-		i += shift;
+	nchars = text - text_buf_begin;
+
 	*text = '\0';
 
-	return i;
+	return nchars;
 }
 
-int gsm_7bit_decode(char *text, const uint8_t *user_data, uint8_t septet_l)
+int gsm_7bit_decode_n(char *text, size_t n, const uint8_t *user_data, uint8_t septet_l)
 {
-	return gsm_7bit_decode_hdr(text, user_data, septet_l, 0);
+	return gsm_7bit_decode_n_hdr(text, n, user_data, septet_l, 0);
+}
+
+int gsm_7bit_decode_n_ussd(char *text, size_t n, const uint8_t *user_data, uint8_t length)
+{
+	int nchars;
+
+	nchars = gsm_7bit_decode_n_hdr(text, n, user_data, length, 0);
+	/* remove last <CR>, if it fits up to the end of last octet */
+	if (nchars && (user_data[gsm_get_octet_len(length) - 1] >> 1) == '\r')
+		text[--nchars] = '\0';
+
+	return nchars;
 }
 
 /* GSM 03.38 6.2.1 Prepare character packing */
@@ -248,14 +269,28 @@ int gsm_septets2octets(uint8_t *result, const uint8_t *rdata, uint8_t septet_len
 }
 
 /* GSM 03.38 6.2.1 Character packing */
-int gsm_7bit_encode(uint8_t *result, const char *data)
+int gsm_7bit_encode_n(uint8_t *result, size_t n, const char *data, int *octets)
 {
 	int y = 0;
+	int o;
+	size_t max_septets = n * 8 / 7;
 
 	/* prepare for the worst case, every character expanding to two bytes */
 	uint8_t *rdata = calloc(strlen(data) * 2, sizeof(uint8_t));
 	y = gsm_septet_encode(rdata, data);
-	gsm_septets2octets(result, rdata, y, 0);
+
+	if (y > max_septets) {
+		/*
+		 * Limit the number of septets to avoid the generation
+		 * of more than n octets.
+		 */
+		y = max_septets;
+	}
+
+	o = gsm_septets2octets(result, rdata, y, 0);
+
+	if (octets)
+		*octets = o;
 
 	free(rdata);
 
@@ -269,6 +304,24 @@ int gsm_7bit_encode(uint8_t *result, const char *data)
 	 *  3.) 48 non-extension characters
 	 *         => (48 * 7 bit) / 8 bit = 42 octects
 	 */
+	return y;
+}
+
+int gsm_7bit_encode_n_ussd(uint8_t *result, size_t n, const char *data, int *octets)
+{
+	int y;
+
+	y = gsm_7bit_encode_n(result, n, data, octets);
+	/* if last octet contains only one bit, add <CR> */
+	if (((y * 7) & 7) == 1)
+		result[(*octets) - 1] |= ('\r' << 1);
+	/* if last character is <CR> and completely fills last octet, add
+	 * another <CR>. */
+	if (y && ((y * 7) & 7) == 0 && (result[(*octets) - 1] >> 1) == '\r' && *octets < n - 1) {
+		result[(*octets)++] = '\r';
+		y++;
+	}
+
 	return y;
 }
 
@@ -336,7 +389,7 @@ int ms_pwr_ctl_lvl(enum gsm_band band, unsigned int dbm)
 	case GSM_BAND_1800:
 		if (dbm >= 36)
 			return 29;
-		else if (dbm >= 34)	
+		else if (dbm >= 34)
 			return 30;
 		else if (dbm >= 32)
 			return 31;
@@ -624,4 +677,40 @@ uint32_t gprs_tmsi2tlli(uint32_t p_tmsi, enum gprs_tlli_type type)
 		break;
 	}
 	return tlli;
+}
+
+/* Wrappers for deprecated functions: */
+
+int gsm_7bit_decode(char *text, const uint8_t *user_data, uint8_t septet_l)
+{
+	gsm_7bit_decode_n(text, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
+			  user_data, septet_l);
+
+	/* Mimic the original behaviour. */
+	return septet_l;
+}
+
+int gsm_7bit_decode_ussd(char *text, const uint8_t *user_data, uint8_t length)
+{
+	return gsm_7bit_decode_n_ussd(text, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
+				      user_data, length);
+}
+
+int gsm_7bit_encode(uint8_t *result, const char *data)
+{
+	int out;
+	return gsm_7bit_encode_n(result, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
+				 data, &out);
+}
+
+int gsm_7bit_encode_ussd(uint8_t *result, const char *data, int *octets)
+{
+	return gsm_7bit_encode_n_ussd(result, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
+				      data, octets);
+}
+
+int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets)
+{
+	return gsm_7bit_encode_n(result, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
+				 data, octets);
 }

@@ -11,6 +11,7 @@ nobase_include_HEADERS = \
                        osmocom/core/crc64gen.h \
                        osmocom/core/crc8gen.h \
                        osmocom/core/crcgen.h \
+                       osmocom/core/defs.h \
                        osmocom/core/gsmtap.h \
                        osmocom/core/gsmtap_util.h \
                        osmocom/core/linuxlist.h \
@@ -42,6 +43,7 @@ nobase_include_HEADERS = \
                        osmocom/gsm/a5.h \
                        osmocom/gsm/abis_nm.h \
                        osmocom/gsm/comp128.h \
+                       osmocom/gsm/comp128v23.h \
                        osmocom/gsm/gan.h \
                        osmocom/gsm/gsm0411_smc.h \
                        osmocom/gsm/gsm0411_smr.h \
@@ -57,6 +59,8 @@ nobase_include_HEADERS = \
                        osmocom/gsm/meas_rep.h \
                        osmocom/gsm/mncc.h \
                        osmocom/gsm/prim.h \
+                       osmocom/gsm/l1sap.h \
+                       osmocom/gsm/protocol/gsm_03_40.h \
                        osmocom/gsm/protocol/gsm_03_41.h \
                        osmocom/gsm/protocol/gsm_04_08.h \
                        osmocom/gsm/protocol/gsm_04_11.h \

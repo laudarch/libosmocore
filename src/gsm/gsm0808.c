@@ -76,6 +76,19 @@ struct msgb *gsm0808_create_reset(void)
 	return msg;
 }
 
+struct msgb *gsm0808_create_reset_ack(void)
+{
+	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
+					       "bssmap: reset ack");
+	if (!msg)
+		return NULL;
+
+	msgb_v_put(msg, BSS_MAP_MSG_RESET_ACKNOWLEDGE);
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+
+	return msg;
+}
+
 struct msgb *gsm0808_create_clear_complete(void)
 {
 	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
@@ -305,6 +318,7 @@ static const struct tlv_definition bss_att_tlvdef = {
 		[GSM0808_IE_CELL_IDENTIFIER]	    = { TLV_TYPE_TLV },
 		[GSM0808_IE_CHOSEN_CHANNEL]	    = { TLV_TYPE_TV },
 		[GSM0808_IE_LAYER_3_INFORMATION]    = { TLV_TYPE_TLV },
+		[GSM0808_IE_LAYER_3_HEADER_INFORMATION] = { TLV_TYPE_TLV },
 		[GSM0808_IE_SPEECH_VERSION]         = { TLV_TYPE_TV },
 		[GSM0808_IE_CHOSEN_ENCR_ALG]        = { TLV_TYPE_TV },
 	},

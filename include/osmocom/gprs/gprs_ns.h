@@ -36,6 +36,7 @@ enum ns_timeout {
 
 #define NSE_S_BLOCKED	0x0001
 #define NSE_S_ALIVE	0x0002
+#define NSE_S_RESET	0x0004
 
 /*! \brief Osmocom NS link layer types */
 enum gprs_ns_ll {
@@ -47,6 +48,15 @@ enum gprs_ns_ll {
 /*! \brief Osmoco NS events */
 enum gprs_ns_evt {
 	GPRS_NS_EVT_UNIT_DATA,
+};
+
+/*! \brief Osmocom NS VC create status */
+enum gprs_ns_cs {
+	GPRS_NS_CS_CREATED,     /*!< A NSVC object has been created */
+	GPRS_NS_CS_FOUND,       /*!< A NSVC object has been found */
+	GPRS_NS_CS_REJECTED,    /*!< Rejected and answered message */
+	GPRS_NS_CS_SKIPPED,     /*!< Skipped message */
+	GPRS_NS_CS_ERROR,       /*!< Failed to process message */
 };
 
 struct gprs_nsvc;
@@ -110,6 +120,7 @@ struct gprs_nsvc {
 
 	unsigned int remote_end_is_sgsn:1;
 	unsigned int persistent:1;
+	unsigned int nsvci_is_valid:1;
 
 	struct rate_ctr_group *ctrg;
 
@@ -129,7 +140,10 @@ struct gprs_nsvc {
 /* Create a new NS protocol instance */
 struct gprs_ns_inst *gprs_ns_instantiate(gprs_ns_cb_t *cb, void *ctx);
 
-/* Destroy a NS protocol instance */
+/* Close a NS protocol instance */
+void gprs_ns_close(struct gprs_ns_inst *nsi);
+
+/* Close and Destroy a NS protocol instance */
 void gprs_ns_destroy(struct gprs_ns_inst *nsi);
 
 /* Listen for incoming GPRS packets via NS/UDP */
@@ -164,6 +178,15 @@ void gprs_nsvc_reset(struct gprs_nsvc *nsvc, uint8_t cause);
 /* Add NS-specific VTY stuff */
 int gprs_ns_vty_init(struct gprs_ns_inst *nsi);
 
+/* Resturn peer info as string (NOTE: the buffer is allocated statically) */
+const char *gprs_ns_ll_str(struct gprs_nsvc *nsvc);
+
+/* Copy the link layer info from other into nsvc */
+void gprs_ns_ll_copy(struct gprs_nsvc *nsvc, struct gprs_nsvc *other);
+
+/* Clear the link layer info (will never match a real link then) */
+void gprs_ns_ll_clear(struct gprs_nsvc *nsvc);
+
 #define NS_ALLOC_SIZE	2048
 #define NS_ALLOC_HEADROOM 20
 static inline struct msgb *gprs_ns_msgb_alloc(void)
@@ -176,11 +199,17 @@ enum signal_ns {
 	S_NS_BLOCK,
 	S_NS_UNBLOCK,
 	S_NS_ALIVE_EXP,	/* Tns-alive expired more than N times */
+	S_NS_REPLACED, /* nsvc object is replaced (sets old_nsvc) */
+	S_NS_MISMATCH, /* got an unexpected IE (sets msg, pdu_type, ie_type) */
 };
 
 struct ns_signal_data {
 	struct gprs_nsvc *nsvc;
+	struct gprs_nsvc *old_nsvc;
 	uint8_t cause;
+	uint8_t pdu_type;
+	uint8_t ie_type;
+	struct msgb *msg;
 };
 
 void gprs_ns_set_log_ss(int ss);

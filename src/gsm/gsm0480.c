@@ -105,7 +105,7 @@ struct msgb *gsm0480_create_unstructuredSS_Notify(int alertPattern, const char *
 	msgb_put_u8(msg, ASN1_OCTET_STRING_TAG);
 	ussd_len_ptr = msgb_put(msg, 1);
 	data = msgb_put(msg, 0);
-	len = gsm_7bit_encode(data, text);
+	gsm_7bit_encode_n_ussd(data, msgb_tailroom(msg), text, &len);
 	msgb_put(msg, len);
 	ussd_len_ptr[0] = len;
 	/* USSD-String } */
@@ -172,7 +172,7 @@ struct msgb *gsm0480_create_notifySS(const char *text)
 	msgb_put_u8(msg, 0x82);
 	tmp_len = msgb_put(msg, 1);
 	data = msgb_put(msg, 0);
-	len = gsm_7bit_encode(data, text);
+	gsm_7bit_encode_n_ussd(data, msgb_tailroom(msg), text, &len);
 	tmp_len[0] = len;
 	msgb_put(msg, len);
 
@@ -234,7 +234,7 @@ static int parse_ussd(const struct gsm48_hdr *hdr, uint16_t len, struct ussd_req
 	case GSM0480_MTYPE_RELEASE_COMPLETE:
 		LOGP(0, LOGL_DEBUG, "USS Release Complete\n");
 		/* could also parse out the optional Cause/Facility data */
-		req->text[0] = 0xFF;
+		req->text[0] = '\0';
 		break;
 	case GSM0480_MTYPE_REGISTER:
 	case GSM0480_MTYPE_FACILITY:
@@ -398,11 +398,8 @@ static int parse_process_uss_req(const uint8_t *uss_req_data, uint16_t length,
 			if ((dcs == 0x0F) &&
 			    (uss_req_data[5] == ASN1_OCTET_STRING_TAG)) {
 				num_chars = (uss_req_data[6] * 8) / 7;
-				/* Prevent a mobile-originated buffer-overrun! */
-				if (num_chars > MAX_LEN_USSD_STRING)
-					num_chars = MAX_LEN_USSD_STRING;
-				gsm_7bit_decode(req->text,
-						&(uss_req_data[7]), num_chars);
+				gsm_7bit_decode_n_ussd(req->text, sizeof(req->text),
+					&(uss_req_data[7]), num_chars);
 				rc = 1;
 			}
 		}
@@ -423,7 +420,7 @@ struct msgb *gsm0480_create_ussd_resp(uint8_t invoke_id, uint8_t trans_id, const
 
 	/* First put the payload text into the message */
 	ptr8 = msgb_put(msg, 0);
-	response_len = gsm_7bit_encode(ptr8, text);
+	gsm_7bit_encode_n_ussd(ptr8, msgb_tailroom(msg), text, &response_len);
 	msgb_put(msg, response_len);
 
 	/* Then wrap it as an Octet String */

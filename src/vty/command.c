@@ -29,7 +29,6 @@ Boston, MA 02111-1307, USA.  */
 #include <errno.h>
 #define _XOPEN_SOURCE
 #include <unistd.h>
-#include <assert.h>
 #include <ctype.h>
 #include <time.h>
 #include <sys/time.h>
@@ -147,7 +146,7 @@ static int cmp_desc(const void *p, const void *q)
 	return strcmp(a->cmd, b->cmd);
 }
 
-static int is_config(struct vty *vty)
+static int is_config_child(struct vty *vty)
 {
 	if (vty->node <= CONFIG_NODE)
 		return 0;
@@ -1574,10 +1573,12 @@ cmd_describe_command_real(vector vline, struct vty *vty, int *status)
 		if ((ret = is_cmd_ambiguous(command, cmd_vector, i,
 					    match)) == 1) {
 			vector_free(cmd_vector);
+			vector_free(matchvec);
 			*status = CMD_ERR_AMBIGUOUS;
 			return NULL;
 		} else if (ret == 2) {
 			vector_free(cmd_vector);
+			vector_free(matchvec);
 			*status = CMD_ERR_NO_MATCH;
 			return NULL;
 		}
@@ -1724,6 +1725,7 @@ static char **cmd_complete_command_real(vector vline, struct vty *vty,
 
 	if (vector_active(vline) == 0) {
 		*status = CMD_ERR_NO_MATCH;
+		vector_free(cmd_vector);
 		return NULL;
 	} else
 		index = vector_active(vline) - 1;
@@ -1881,15 +1883,47 @@ char **cmd_complete_command(vector vline, struct vty *vty, int *status)
 }
 
 /* return parent node */
-/* MUST eventually converge on CONFIG_NODE */
+/*
+ * This function MUST eventually converge on a node when called repeatedly,
+ * there must not be any cycles.
+ * All 'config' nodes shall converge on CONFIG_NODE.
+ * All other 'enable' nodes shall converge on ENABLE_NODE.
+ * All 'view' only nodes shall converge on VIEW_NODE.
+ * All other nodes shall converge on themselves or it must be ensured,
+ * that the user's rights are not extended anyhow by calling this function.
+ *
+ * Note that these requirements also apply to all functions that are used
+ * as go_parent_cb.
+ * Note also that this function relies on the is_config_child callback to
+ * recognize non-config nodes if go_parent_cb is not set.
+ */
 enum node_type vty_go_parent(struct vty *vty)
 {
-	assert(vty->node > CONFIG_NODE);
+	switch (vty->node) {
+		case AUTH_NODE:
+		case VIEW_NODE:
+		case ENABLE_NODE:
+		case CONFIG_NODE:
+			break;
 
-	if (host.app_info->go_parent_cb)
-		host.app_info->go_parent_cb(vty);
-	else
-		vty->node = CONFIG_NODE;
+		case AUTH_ENABLE_NODE:
+			vty->node = VIEW_NODE;
+			break;
+
+		case CFG_LOG_NODE:
+		case VTY_NODE:
+			vty->node = CONFIG_NODE;
+			break;
+
+		default:
+			if (host.app_info->go_parent_cb)
+				host.app_info->go_parent_cb(vty);
+			else if (is_config_child(vty))
+				vty->node = CONFIG_NODE;
+			else
+				vty->node = VIEW_NODE;
+			break;
+	}
 
 	return vty->node;
 }
@@ -2047,7 +2081,7 @@ cmd_execute_command(vector vline, struct vty *vty, struct cmd_element **cmd,
 
 	/* Go to parent for config nodes to attempt to find the right command */
 	while (ret != CMD_SUCCESS && ret != CMD_WARNING
-	       && is_config(vty)) {
+	       && is_config_child(vty)) {
 		vty_go_parent(vty);
 		ret = cmd_execute_command_real(vline, vty, cmd);
 		tried = 1;
@@ -2195,7 +2229,7 @@ int config_from_file(struct vty *vty, FILE * fp)
 		/* Try again with setting node to CONFIG_NODE */
 		while (ret != CMD_SUCCESS && ret != CMD_WARNING
 		       && ret != CMD_ERR_NOTHING_TODO
-		       && vty->node != CONFIG_NODE && is_config(vty)) {
+		       && is_config_child(vty)) {
 			vty_go_parent(vty);
 			ret = cmd_execute_command_strict(vline, vty, NULL);
 		}
@@ -2252,6 +2286,7 @@ gDEFUN(config_exit,
       config_exit_cmd, "exit", "Exit current mode and down to previous mode\n")
 {
 	switch (vty->node) {
+	case AUTH_NODE:
 	case VIEW_NODE:
 	case ENABLE_NODE:
 		if (0)		//vty_shell (vty))
@@ -2263,13 +2298,9 @@ gDEFUN(config_exit,
 		vty->node = ENABLE_NODE;
 		vty_config_unlock(vty);
 		break;
-	case VTY_NODE:
-		vty->node = CONFIG_NODE;
-		break;
-	case CFG_LOG_NODE:
-		vty->node = CONFIG_NODE;
-		break;
 	default:
+		if (vty->node > CONFIG_NODE)
+			vty_go_parent (vty);
 		break;
 	}
 	return CMD_SUCCESS;
@@ -2279,19 +2310,24 @@ gDEFUN(config_exit,
     gDEFUN(config_end,
       config_end_cmd, "end", "End current mode and change to enable mode.")
 {
-	switch (vty->node) {
-	case VIEW_NODE:
-	case ENABLE_NODE:
-		/* Nothing to do. */
-		break;
-	case CFG_LOG_NODE:
-	case CONFIG_NODE:
-	case VTY_NODE:
+	if (vty->node > ENABLE_NODE) {
+		int last_node = CONFIG_NODE;
+
+		/* Repeatedly call go_parent until a top node is reached. */
+		while (vty->node > CONFIG_NODE) {
+			if (vty->node == last_node) {
+				/* Ensure termination, this shouldn't happen. */
+				break;
+			}
+			last_node = vty->node;
+			vty_go_parent(vty);
+		}
+
 		vty_config_unlock(vty);
-		vty->node = ENABLE_NODE;
-		break;
-	default:
-		break;
+		if (vty->node > ENABLE_NODE)
+			vty->node = ENABLE_NODE;
+		vty->index = NULL;
+		vty->index_sub = NULL;
 	}
 	return CMD_SUCCESS;
 }
@@ -3286,6 +3322,18 @@ void install_default(enum node_type node)
 	install_element(node, &show_running_config_cmd);
 }
 
+void vty_install_default(enum node_type node)
+{
+	install_default(node);
+
+	install_element(node, &config_exit_cmd);
+
+	if (node >= CONFIG_NODE) {
+		/* It's not a top node. */
+		install_element(node, &config_end_cmd);
+	}
+}
+
 /**
  * \brief Write the current running config to a given file
  * \param[in] vty the vty of the code
@@ -3364,8 +3412,7 @@ void cmd_init(int terminal)
 	}
 
 	if (terminal) {
-		install_element(ENABLE_NODE, &config_exit_cmd);
-		install_default(ENABLE_NODE);
+		vty_install_default(ENABLE_NODE);
 		install_element(ENABLE_NODE, &config_disable_cmd);
 		install_element(ENABLE_NODE, &config_terminal_cmd);
 		install_element (ENABLE_NODE, &copy_runningconfig_startupconfig_cmd);
@@ -3379,8 +3426,7 @@ void cmd_init(int terminal)
 		install_element(ENABLE_NODE, &config_terminal_no_length_cmd);
 		install_element(ENABLE_NODE, &echo_cmd);
 
-		install_default(CONFIG_NODE);
-		install_element(CONFIG_NODE, &config_exit_cmd);
+		vty_install_default(CONFIG_NODE);
 	}
 
 	install_element(CONFIG_NODE, &hostname_cmd);

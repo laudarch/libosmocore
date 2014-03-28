@@ -150,10 +150,8 @@ static void lapd_dl_flush_send(struct lapd_datalink *dl)
 		msgb_free(msg);
 
 	/* Clear send-buffer */
-	if (dl->send_buffer) {
-		msgb_free(dl->send_buffer);
-		dl->send_buffer = NULL;
-	}
+	msgb_free(dl->send_buffer);
+	dl->send_buffer = NULL;
 }
 
 static void lapd_dl_flush_hist(struct lapd_datalink *dl)
@@ -232,10 +230,8 @@ static void lapd_dl_newstate(struct lapd_datalink *dl, uint32_t state)
 		/* stop T203 on leaving MF EST state, if running */
 		lapd_stop_t203(dl);
 		/* remove content res. (network side) on leaving MF EST state */
-		if (dl->cont_res) {
-			msgb_free(dl->cont_res);
-			dl->cont_res = NULL;
-		}
+		msgb_free(dl->cont_res);
+		dl->cont_res = NULL;
 	}
 
 	/* start T203 on entering MF EST state, if enabled */
@@ -295,8 +291,8 @@ void lapd_dl_init(struct lapd_datalink *dl, uint8_t k, uint8_t v_range,
 
 	if (!tall_lapd_ctx)
 		tall_lapd_ctx = talloc_named_const(NULL, 1, "lapd context");
-	dl->tx_hist = (struct lapd_history *) talloc_zero_array(tall_lapd_ctx,
-					struct log_info, dl->range_hist);
+	dl->tx_hist = talloc_zero_array(tall_lapd_ctx,
+					struct lapd_history, dl->range_hist);
 }
 
 /* reset to IDLE state */
@@ -311,10 +307,8 @@ void lapd_dl_reset(struct lapd_datalink *dl)
 	lapd_dl_flush_tx(dl);
 	lapd_dl_flush_send(dl);
 	/* Discard partly received L3 message */
-	if (dl->rcv_buffer) {
-		msgb_free(dl->rcv_buffer);
-		dl->rcv_buffer = NULL;
-	}
+	msgb_free(dl->rcv_buffer);
+	dl->rcv_buffer = NULL;
 	/* stop Timers */
 	lapd_stop_t200(dl);
 	lapd_stop_t203(dl);
@@ -826,14 +820,23 @@ static int lapd_rx_u(struct msgb *msg, struct lapd_msg_ctx *lctx)
 			 * yet received UA or another mobile (collision) tries
 			 * to establish connection. The mobile must receive
 			 * UA again. */
-			if (!dl->cont_res && dl->v_send != dl->v_recv) {
-				LOGP(DLLAPD, LOGL_INFO, "Remote reestablish\n");
-				mdl_error(MDL_CAUSE_SABM_MF, lctx);
+			/* 5.4.2.1 */
+			if (!length) {
+				/* If no content resolution, this is a
+				 * re-establishment. */
+				LOGP(DLLAPD, LOGL_INFO,
+					"Remote reestablish\n");
 				break;
 			}
+			if (!dl->cont_res) {
+				LOGP(DLLAPD, LOGL_INFO, "SABM command not "
+						"allowed in this state\n");
+				mdl_error(MDL_CAUSE_SABM_MF, lctx);
+				msgb_free(msg);
+				return 0;
+			}
 			/* Ignore SABM if content differs from first SABM. */
-			if (dl->mode == LAPD_MODE_NETWORK && length
-			 && dl->cont_res) {
+			if (dl->mode == LAPD_MODE_NETWORK && length) {
 #ifdef TEST_CONTENT_RESOLUTION_NETWORK
 				dl->cont_res->data[0] ^= 0x01;
 #endif
@@ -899,6 +902,7 @@ static int lapd_rx_u(struct msgb *msg, struct lapd_msg_ctx *lctx)
 			msgb_free(msg);
 		} else {
 			/* 5.4.1.4 Contention resolution establishment */
+			msgb_trim(msg, length);
 			rc = send_dl_l3(prim, op, lctx, msg);
 		}
 		break;
@@ -1016,6 +1020,7 @@ static int lapd_rx_u(struct msgb *msg, struct lapd_msg_ctx *lctx)
 			msgb_free(msg);
 			return 0;
 		}
+		msgb_trim(msg, length);
 		rc = send_dl_l3(PRIM_DL_UNIT_DATA, PRIM_OP_INDICATION, lctx,
 				msg);
 		break;
@@ -1450,8 +1455,8 @@ static int lapd_rx_i(struct msgb *msg, struct lapd_msg_ctx *lctx)
 	int length = lctx->length;
 	int rc;
 
-	LOGP(DLLAPD, LOGL_INFO, "I received in state %s\n",
-		lapd_state_names[dl->state]);
+	LOGP(DLLAPD, LOGL_INFO, "I received in state %s on SAPI(%u)\n",
+		lapd_state_names[dl->state], lctx->sapi);
 		
 	/* G.2.2 Wrong value of the C/R bit */
 	if (lctx->cr == dl->cr.rem2loc.resp) {
@@ -1545,8 +1550,7 @@ static int lapd_rx_i(struct msgb *msg, struct lapd_msg_ctx *lctx)
 		if (!lctx->more && !dl->rcv_buffer) {
 			LOGP(DLLAPD, LOGL_INFO, "message in single I frame\n");
 			/* send a DATA INDICATION to L3 */
-			msg->len = length;
-			msg->tail = msg->data + length;
+			msgb_trim(msg, length);
 			rc = send_dl_l3(PRIM_DL_DATA, PRIM_OP_INDICATION, lctx,
 				msg);
 		} else {
@@ -1603,6 +1607,12 @@ static int lapd_rx_i(struct msgb *msg, struct lapd_msg_ctx *lctx)
 		if (!dl->own_busy) {
 			/* NOTE: V(R) is already set above */
 			rc = lapd_send_i(lctx, __LINE__);
+
+			/* if update_pending_iframe returns 0 it updated
+			 * the lapd header of an iframe in the tx queue */
+			if (rc && dl->update_pending_frames)
+				rc = dl->update_pending_frames(lctx);
+
 			if (rc) {
 				LOGP(DLLAPD, LOGL_INFO, "we are not busy and "
 					"have no pending data, send RR\n");
@@ -1693,10 +1703,8 @@ static int lapd_est_req(struct osmo_dlsap_prim *dp, struct lapd_msg_ctx *lctx)
 	memcpy(&dl->lctx, lctx, sizeof(dl->lctx));
 
 	/* Discard partly received L3 message */
-	if (dl->rcv_buffer) {
-		msgb_free(dl->rcv_buffer);
-		dl->rcv_buffer = NULL;
-	}
+	msgb_free(dl->rcv_buffer);
+	dl->rcv_buffer = NULL;
 
 	/* assemble message */
 	memcpy(&nctx, &dl->lctx, sizeof(nctx));
@@ -1949,20 +1957,22 @@ static int lapd_res_req(struct osmo_dlsap_prim *dp, struct lapd_msg_ctx *lctx)
 	memcpy(&dl->lctx, lctx, sizeof(dl->lctx));
 
 	/* Replace message in the send-buffer (reconnect) */
-	if (dl->send_buffer)
-		msgb_free(dl->send_buffer);
+	msgb_free(dl->send_buffer);
+	dl->send_buffer = NULL;
+
 	dl->send_out = 0;
-	if (msg && msg->len)
+	if (msg->len) {
 		/* Write data into the send buffer, to be sent first */
 		dl->send_buffer = msg;
-	else
+	} else {
+		msgb_free(msg);
+		msg = NULL;
 		dl->send_buffer = NULL;
+	}
 
 	/* Discard partly received L3 message */
-	if (dl->rcv_buffer) {
-		msgb_free(dl->rcv_buffer);
-		dl->rcv_buffer = NULL;
-	}
+	msgb_free(dl->rcv_buffer);
+	dl->rcv_buffer = NULL;
 
 	/* Create new msgb (old one is now free) */
 	msg = lapd_msgb_alloc(0, "LAPD SABM");

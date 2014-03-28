@@ -114,6 +114,7 @@ enum lapdm_format {
 static int lapdm_send_ph_data_req(struct lapd_msg_ctx *lctx, struct msgb *msg);
 static int send_rslms_dlsap(struct osmo_dlsap_prim *dp,
 	struct lapd_msg_ctx *lctx);
+static int update_pending_frames(struct lapd_msg_ctx *lctx);
 
 static void lapdm_dl_init(struct lapdm_datalink *dl,
 			  struct lapdm_entity *entity, int t200)
@@ -124,6 +125,7 @@ static void lapdm_dl_init(struct lapdm_datalink *dl,
 	dl->dl.reestablish = 0; /* GSM uses no reestablish */
 	dl->dl.send_ph_data_req = lapdm_send_ph_data_req;
 	dl->dl.send_dlsap = send_rslms_dlsap;
+	dl->dl.update_pending_frames = update_pending_frames;
 	dl->dl.n200_est_rel = N200_EST_REL;
 	dl->dl.n200 = N200;
 	dl->dl.t203_sec = 0; dl->dl.t203_usec = 0;
@@ -181,7 +183,7 @@ void lapdm_channel_exit(struct lapdm_channel *lc)
 	lapdm_entity_exit(&lc->lapdm_dcch);
 }
 
-static struct lapdm_datalink *datalink_for_sapi(struct lapdm_entity *le, uint8_t sapi)
+struct lapdm_datalink *lapdm_datalink_for_sapi(struct lapdm_entity *le, uint8_t sapi)
 {
 	switch (sapi) {
 	case LAPDm_SAPI_NORMAL:
@@ -191,14 +193,6 @@ static struct lapdm_datalink *datalink_for_sapi(struct lapdm_entity *le, uint8_t
 	default:
 		return NULL;
 	}
-}
-
-/* remove the L2 header from a MSGB */
-static inline unsigned char *msgb_pull_l2h(struct msgb *msg)
-{
-	unsigned char *ret = msgb_pull(msg, msg->l3h - msg->l2h);
-	msg->l2h = NULL;
-	return ret;
 }
 
 /* Append padding (if required) */
@@ -407,6 +401,11 @@ static int send_rslms_dlsap(struct osmo_dlsap_prim *dp,
 
 	switch (OSMO_PRIM_HDR(&dp->oph)) {
 	case OSMO_PRIM(PRIM_DL_EST, PRIM_OP_INDICATION):
+		if (dp->oph.msg && dp->oph.msg->len == 0) {
+			/* omit L3 info by freeing message */
+			msgb_free(dp->oph.msg);
+			dp->oph.msg = NULL;
+		}
 		rll_msg = RSL_MT_EST_IND;
 		break;
 	case OSMO_PRIM(PRIM_DL_EST, PRIM_OP_CONFIRM):
@@ -491,6 +490,25 @@ static int lapdm_send_ph_data_req(struct lapd_msg_ctx *lctx, struct msgb *msg)
 			23);
 }
 
+static int update_pending_frames(struct lapd_msg_ctx *lctx)
+{
+	struct lapd_datalink *dl = lctx->dl;
+	struct msgb *msg;
+	int rc = -1;
+
+	llist_for_each_entry(msg, &dl->tx_queue, list) {
+		if (LAPDm_CTRL_is_I(msg->l2h[1])) {
+			msg->l2h[1] = LAPDm_CTRL_I(dl->v_recv, LAPDm_CTRL_I_Ns(msg->l2h[1]),
+					LAPDm_CTRL_PF_BIT(msg->l2h[1]));
+			rc = 0;
+		} else if (LAPDm_CTRL_is_S(msg->l2h[1])) {
+			LOGP(DLLAPD, LOGL_ERROR, "Supervisory frame in queue, this shouldn't happen\n");
+		}
+	}
+
+	return rc;
+}
+
 /* input into layer2 (from layer 1) */
 static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 	uint8_t chan_nr, uint8_t link_id)
@@ -546,7 +564,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 		}
 	}
 
-	mctx.dl = datalink_for_sapi(le, sapi);
+	mctx.dl = lapdm_datalink_for_sapi(le, sapi);
 	/* G.2.1 No action on frames containing an unallocated SAPI. */
 	if (!mctx.dl) {
 		LOGP(DLLAPD, LOGL_NOTICE, "Received frame for unsupported "
@@ -606,7 +624,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 			lctx.length = n201;
 			lctx.more = 0;
 			msg->l3h = msg->l2h + 2;
-			msgb_pull_l2h(msg);
+			msgb_pull_to_l3(msg);
 		} else {
 			/* length field */
 			if (!(msg->l2h[2] & LAPDm_EL)) {
@@ -624,7 +642,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 			lctx.length = msg->l2h[2] >> 2;
 			lctx.more = !!(msg->l2h[2] & LAPDm_MORE);
 			msg->l3h = msg->l2h + 3;
-			msgb_pull_l2h(msg);
+			msgb_pull_to_l3(msg);
 		}
 		/* store context for messages from lapd */
 		memcpy(&mctx.dl->mctx, &mctx, sizeof(mctx.dl->mctx));
@@ -639,7 +657,7 @@ static int l2_ph_data_ind(struct msgb *msg, struct lapdm_entity *le,
 		/* directly pass up to layer3 */
 		LOGP(DLLAPD, LOGL_INFO, "fmt=Bbis UI\n");
 		msg->l3h = msg->l2h;
-		msgb_pull_l2h(msg);
+		msgb_pull_to_l3(msg);
 		rc = send_rslms_rll_l3(RSL_MT_UNIT_DATA_IND, &mctx, msg);
 		break;
 	default:
@@ -802,9 +820,8 @@ static int rslms_rx_rll_est_req(struct msgb *msg, struct lapdm_datalink *dl)
 	}
 
 	/* Remove RLL header from msgb and set length to L3-info */
-	msgb_pull_l2h(msg);
-	msg->len = length;
-	msg->tail = msg->l3h + length;
+	msgb_pull_to_l3(msg);
+	msgb_trim(msg, length);
 
 	/* prepare prim */
 	osmo_prim_init(&dp.oph, 0, PRIM_DL_EST, PRIM_OP_REQUEST, msg);
@@ -817,10 +834,10 @@ static int rslms_rx_rll_est_req(struct msgb *msg, struct lapdm_datalink *dl)
 static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 {
 	struct lapdm_entity *le = dl->entity;
-	int ui_bts = (le->mode == LAPDM_MODE_BTS);
 	struct abis_rsl_rll_hdr *rllh = msgb_l2(msg);
 	uint8_t chan_nr = rllh->chan_nr;
 	uint8_t link_id = rllh->link_id;
+	int ui_bts = (le->mode == LAPDM_MODE_BTS && (link_id & 0x40));
 	uint8_t sapi = link_id & 7;
 	struct tlv_parsed tv;
 	int length;
@@ -844,9 +861,10 @@ static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 	msg->l3h = (uint8_t *) TLVP_VAL(&tv, RSL_IE_L3_INFO);
 	length = TLVP_LEN(&tv, RSL_IE_L3_INFO);
 	/* check if the layer3 message length exceeds N201 */
-	if (length + 4 + !ui_bts > 23) {
+	if (length + ((link_id & 0x40) ? 4 : 2) + !ui_bts > 23) {
 		LOGP(DLLAPD, LOGL_ERROR, "frame too large: %d > N201(%d) "
-			"(discarding)\n", length, 18 + ui_bts);
+			"(discarding)\n", length,
+			((link_id & 0x40) ? 18 : 20) + ui_bts);
 		msgb_free(msg);
 		return -EIO;
 	}
@@ -855,18 +873,20 @@ static int rslms_rx_rll_udata_req(struct msgb *msg, struct lapdm_datalink *dl)
 		le->tx_power, le->ta);
 
 	/* Remove RLL header from msgb and set length to L3-info */
-	msgb_pull_l2h(msg);
-	msg->len = length;
-	msg->tail = msg->l3h + length;
+	msgb_pull_to_l3(msg);
+	msgb_trim(msg, length);
 
 	/* Push L1 + LAPDm header on msgb */
-	msg->l2h = msgb_push(msg, 4 + !ui_bts);
-	msg->l2h[0] = le->tx_power;
-	msg->l2h[1] = le->ta;
-	msg->l2h[2] = LAPDm_ADDR(LAPDm_LPD_NORMAL, sapi, dl->dl.cr.loc2rem.cmd);
-	msg->l2h[3] = LAPDm_CTRL_U(LAPDm_U_UI, 0);
+	msg->l2h = msgb_push(msg, 2 + !ui_bts);
+	msg->l2h[0] = LAPDm_ADDR(LAPDm_LPD_NORMAL, sapi, dl->dl.cr.loc2rem.cmd);
+	msg->l2h[1] = LAPDm_CTRL_U(LAPDm_U_UI, 0);
 	if (!ui_bts)
-		msg->l2h[4] = LAPDm_LEN(length);
+		msg->l2h[2] = LAPDm_LEN(length);
+	if (link_id & 0x40) {
+		msg->l2h = msgb_push(msg, 2);
+		msg->l2h[0] = le->tx_power;
+		msg->l2h[1] = le->ta;
+	}
 
 	/* Tramsmit */
 	return tx_ph_data_enqueue(dl, msg, chan_nr, link_id, 23);
@@ -891,9 +911,8 @@ static int rslms_rx_rll_data_req(struct msgb *msg, struct lapdm_datalink *dl)
 	length = TLVP_LEN(&tv, RSL_IE_L3_INFO);
 
 	/* Remove RLL header from msgb and set length to L3-info */
-	msgb_pull_l2h(msg);
-	msg->len = length;
-	msg->tail = msg->l3h + length;
+	msgb_pull_to_l3(msg);
+	msgb_trim(msg, length);
 
 	/* prepare prim */
 	osmo_prim_init(&dp.oph, 0, PRIM_DL_DATA, PRIM_OP_REQUEST, msg);
@@ -948,9 +967,8 @@ static int rslms_rx_rll_res_req(struct msgb *msg, struct lapdm_datalink *dl)
 	length = TLVP_LEN(&tv, RSL_IE_L3_INFO);
 
 	/* Remove RLL header from msgb and set length to L3-info */
-	msgb_pull_l2h(msg);
-	msg->len = length;
-	msg->tail = msg->l3h + length;
+	msgb_pull_to_l3(msg);
+	msgb_trim(msg, length);
 
 	/* prepare prim */
 	osmo_prim_init(&dp.oph, 0, (msg_type == RSL_MT_RES_REQ) ? PRIM_DL_RES
@@ -972,12 +990,11 @@ static int rslms_rx_rll_rel_req(struct msgb *msg, struct lapdm_datalink *dl)
 		mode = rllh->data[1] & 1;
 
 	/* Pull rllh */
-	msgb_pull_l2h(msg);
+	msgb_pull_to_l3(msg);
 
 	/* 04.06 3.8.3: No information field is permitted with the DISC
 	 * command. */
-	msg->len = 0;
-	msg->tail = msg->l3h = msg->data;
+	msgb_trim(msg, 0);
 
 	/* prepare prim */
 	osmo_prim_init(&dp.oph, 0, PRIM_DL_REL, PRIM_OP_REQUEST, msg);
@@ -1036,7 +1053,7 @@ static int l2_ph_chan_conf(struct msgb *msg, struct lapdm_entity *le, uint32_t f
 
 	gsm_fn2gsmtime(&tm, frame_nr);
 
-	msgb_pull_l2h(msg);
+	msgb_pull_to_l3(msg);
 	msg->l2h = msgb_push(msg, sizeof(*ch) + sizeof(*ref));
 	ch = (struct abis_rsl_cchan_hdr *)msg->l2h;
 	rsl_init_cchan_hdr(ch, RSL_MT_CHAN_CONF);
@@ -1072,10 +1089,10 @@ static int rslms_rx_rll(struct msgb *msg, struct lapdm_channel *lc)
 	else
 		le = &lc->lapdm_dcch;
 
-	/* G.2.1 No action schall be taken on frames containing an unallocated
+	/* G.2.1 No action shall be taken on frames containing an unallocated
 	 * SAPI.
 	 */
-	dl = datalink_for_sapi(le, sapi);
+	dl = lapdm_datalink_for_sapi(le, sapi);
 	if (!dl) {
 		LOGP(DLLAPD, LOGL_ERROR, "No instance for SAPI %d!\n", sapi);
 		msgb_free(msg);
@@ -1083,7 +1100,6 @@ static int rslms_rx_rll(struct msgb *msg, struct lapdm_channel *lc)
 	}
 
 	switch (msg_type) {
-	case RSL_MT_UNIT_DATA_REQ:
 	case RSL_MT_DATA_REQ:
 	case RSL_MT_SUSP_REQ:
 	case RSL_MT_REL_REQ:

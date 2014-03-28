@@ -9,13 +9,6 @@ cat $abs_srcdir/a5/a5_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/a5/a5_test], [0], [expout])
 AT_CLEANUP
 
-AT_SETUP([bssgp-fc])
-AT_KEYWORDS([bssgp-fc])
-cat $abs_srcdir/gb/bssgp_fc_tests.ok > expout
-cat $abs_srcdir/gb/bssgp_fc_tests.err > experr
-AT_CHECK([$abs_top_srcdir/tests/gb/bssgp_fc_tests.sh $abs_top_builddir/tests/gb], [0], [expout], [experr])
-AT_CLEANUP
-
 AT_SETUP([bits])
 AT_KEYWORDS([bits])
 cat $abs_srcdir/bits/bitrev_test.ok > expout
@@ -49,12 +42,6 @@ cat $abs_srcdir/smscb/smscb_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/smscb/smscb_test], [0], [expout])
 AT_CLEANUP
 
-AT_SETUP([timer])
-AT_KEYWORDS([timer])
-cat $abs_srcdir/timer/timer_test.ok > expout
-AT_CHECK([$abs_top_builddir/tests/timer/timer_test -s 5], [0], [expout], [ignore])
-AT_CLEANUP
-
 AT_SETUP([ussd])
 AT_KEYWORDS([ussd])
 cat $abs_srcdir/ussd/ussd_test.ok > expout
@@ -65,6 +52,12 @@ AT_SETUP([auth])
 AT_KEYWORDS([auth])
 cat $abs_srcdir/auth/milenage_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/auth/milenage_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([comp128])
+AT_KEYWORDS([comp128])
+cat $abs_srcdir/comp128/comp128_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/comp128/comp128_test], [0], [expout])
 AT_CLEANUP
 
 AT_SETUP([lapd])
@@ -111,4 +104,35 @@ AT_SETUP([strrb])
 AT_KEYWORDS([strrb])
 cat $abs_srcdir/strrb/strrb_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/strrb/strrb_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([vty])
+AT_KEYWORDS([vty])
+cat $abs_srcdir/vty/vty_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/vty/vty_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([gprs-ns])
+AT_KEYWORDS([gprs-ns])
+cat $abs_srcdir/gb/gprs_ns_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/gb/gprs_ns_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([utils])
+AT_KEYWORDS([utils])
+cat $abs_srcdir/utils/utils_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/utils/utils_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([bssgp-fc])
+AT_KEYWORDS([bssgp-fc])
+cat $abs_srcdir/gb/bssgp_fc_tests.ok > expout
+cat $abs_srcdir/gb/bssgp_fc_tests.err > experr
+AT_CHECK([$abs_top_srcdir/tests/gb/bssgp_fc_tests.sh $abs_top_builddir/tests/gb], [0], [expout], [experr])
+AT_CLEANUP
+
+AT_SETUP([timer])
+AT_KEYWORDS([timer])
+cat $abs_srcdir/timer/timer_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/timer/timer_test -s 5], [0], [expout], [ignore])
 AT_CLEANUP
